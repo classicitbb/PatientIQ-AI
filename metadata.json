@@ -1,0 +1,6 @@
+{
+  "name": "Patient IQ - Pre-Visit Intelligence Platform",
+  "description": "Pre-visit intelligence kiosk allowing clients to complete an intake form, generating diagnostic readiness scores, lifestyle matching, and Gemini-powered consultative sales guides for staff.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
