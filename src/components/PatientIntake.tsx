@@ -21,15 +21,19 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
   const [isNewPatient, setIsNewPatient] = useState<boolean>(true);
   const [answers, setAnswers] = useState<Record<string, OptionKey>>({});
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [submitError, setSubmitError] = useState<string>('');
   const [completedSession, setCompletedSession] = useState<PatientSession | null>(null);
 
   // Auto-advance helper on option tap
   const handleOptionTap = (questionId: string, optionKey: OptionKey) => {
     setAnswers(prev => ({ ...prev, [questionId]: optionKey }));
+    setSubmitError('');
     
-    setTimeout(() => {
-      setStep(prev => prev + 1);
-    }, 380);
+    if (step < QUESTIONS.length) {
+      setTimeout(() => {
+        setStep(prev => Math.min(QUESTIONS.length, prev + 1));
+      }, 380);
+    }
   };
 
   const handleNextStep = () => {
@@ -45,6 +49,7 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
 
   const handleSubmit = async () => {
     setSubmitting(true);
+    setSubmitError('');
     const score = scoreAnswers(answers);
     const newSession: PatientSession = {
       id: generateId(),
@@ -72,21 +77,30 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ storeId: storeSlug, session: newSession }),
       });
-      if (response.ok) {
-        const data = await response.json();
-        if (data && data.success && data.session) {
-          // Use the complete server response (includes generated aiStrategy)
-          sessionToUse = data.session;
-        }
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        const details = data?.error || data?.details || response.statusText || 'Unknown server error';
+        throw new Error(`Strategy save failed (${response.status}): ${details}`);
       }
-    } catch (e) {
+      if (data && data.success && data.session) {
+        // Use the complete server response (includes generated aiStrategy)
+        sessionToUse = data.session;
+      }
+    } catch (e: any) {
+      const message = e?.message || 'Unable to save the profile online.';
+      setSubmitError(`${message} The profile was still completed on this tablet.`);
+      sessionToUse = {
+        ...newSession,
+        aiStrategyError: message,
+      };
       console.warn('Unable to save target session to backend, using local fallback:', e);
+    } finally {
+      setSubmitting(false);
     }
 
     onSessionComplete(sessionToUse);
     setCompletedSession(sessionToUse);
     setStep(13);
-    setSubmitting(false);
   };
 
   const toggleFullscreen = () => {
@@ -112,6 +126,7 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
     setEmail('');
     setIsNewPatient(true);
     setAnswers({});
+    setSubmitError('');
     setCompletedSession(null);
   };
 
@@ -205,6 +220,12 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
             );
           })}
         </div>
+
+        {step === 12 && submitError && (
+          <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold leading-relaxed text-amber-800">
+            {submitError}
+          </div>
+        )}
 
         {/* Bottom actions */}
         <div className="flex items-center justify-between mt-8 pt-4 border-t border-slate-100">
@@ -463,8 +484,19 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
                     First Visit
                   </span>
                 )}
+                {completedSession.aiStrategyError && (
+                  <span className="text-[9px] bg-amber-50 border border-amber-200 text-amber-700 font-black px-2 mt-1 rounded uppercase tracking-wider">
+                    Saved locally
+                  </span>
+                )}
               </div>
             </div>
+
+            {completedSession.aiStrategyError && (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold leading-relaxed text-amber-800">
+                The AI playbook could not be generated right now. The patient profile was completed and saved on this tablet.
+              </div>
+            )}
 
             {/* Findings Bento Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-6 border-b border-slate-100">
