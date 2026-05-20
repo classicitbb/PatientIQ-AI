@@ -8,7 +8,6 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import fs from 'fs';
 
 // Load environmental configurations
 dotenv.config();
@@ -43,6 +42,206 @@ function getGeminiClient(): GoogleGenAI | null {
     console.error('Failed to initialize Gemini Client:', err);
     return null;
   }
+}
+
+interface PatientStrategyProfile {
+  contact?: {
+    name?: string;
+  };
+  isNewPatient?: boolean;
+  score: {
+    urgency: string;
+    budgetTier: string;
+    frameStyle: string;
+    faceShape: string;
+    colorPref: string;
+    usageEnv: string;
+    lensFlags: string[];
+  };
+}
+
+interface AiStrategy {
+  styleAdvice: string;
+  lensUpgradeStrategy: string;
+  rapportOpener: string;
+  serviceApproach: string;
+  objectionHandling: string;
+  upSellingTips: string;
+  isFallback?: boolean;
+}
+
+const STRATEGY_FIELDS: Array<keyof AiStrategy> = [
+  'styleAdvice',
+  'lensUpgradeStrategy',
+  'rapportOpener',
+  'serviceApproach',
+  'objectionHandling',
+  'upSellingTips',
+];
+
+function isValidStrategyProfile(value: any): value is PatientStrategyProfile {
+  return Boolean(
+    value?.score &&
+    typeof value.score.frameStyle === 'string' &&
+    typeof value.score.faceShape === 'string' &&
+    typeof value.score.colorPref === 'string' &&
+    typeof value.score.usageEnv === 'string' &&
+    typeof value.score.budgetTier === 'string' &&
+    typeof value.score.urgency === 'string' &&
+    Array.isArray(value.score.lensFlags)
+  );
+}
+
+function isAiStrategy(value: any): value is AiStrategy {
+  return STRATEGY_FIELDS.every((field) => typeof value?.[field] === 'string' && value[field].trim() !== '');
+}
+
+function buildStrategyPrompt(profile: PatientStrategyProfile): string {
+  const { contact, isNewPatient, score } = profile;
+  return `Analyze this patient profile from our retail optical kiosk system and generate a customized high-fidelity consulting strategy for our Customer Service representatives (CSR).
+Here is the profile details:
+- Name: ${contact?.name || 'Anonymous Guest'}
+- Is New Patient: ${isNewPatient ? 'Yes' : 'No'}
+- Urgency Level: ${score.urgency}
+- Budget Tier: ${score.budgetTier}
+- Frame Style Preference: ${score.frameStyle}
+- Face Shape: ${score.faceShape}
+- Preferred Colors: ${score.colorPref}
+- Primary Lifestyle/Environment: ${score.usageEnv}
+- Calculated Lens Focus Flags: ${score.lensFlags.join(', ')}
+
+Return only a raw JSON object with exactly these string fields:
+styleAdvice, lensUpgradeStrategy, rapportOpener, serviceApproach, objectionHandling, upSellingTips.
+Make the advice tailored, practical, conversational, and clear for a retail optical practitioner.`;
+}
+
+function buildLocalStrategy(profile: PatientStrategyProfile): AiStrategy {
+  const clientName = profile.contact?.name || 'Guest';
+  const isNewText = profile.isNewPatient ? 'As a new client to our clinic' : 'As a returning client';
+  const { score } = profile;
+
+  return {
+    styleAdvice: `Suggest elegant ${score.frameStyle} designs matching their ${score.faceShape} face shape. Emphasize standard colors like ${score.colorPref.toLowerCase()} for daily use.`,
+    lensUpgradeStrategy: `Focus heavily on ${score.lensFlags.length > 0 ? score.lensFlags.join(' and ') : 'high-durability coatings'} based on their screen activities.`,
+    rapportOpener: `Welcome back, ${clientName}! ${isNewText}, we noticed you spend considerable time engaged in ${score.usageEnv.toLowerCase()}. Let's identify the perfect solution today.`,
+    serviceApproach: `Present selections that map directly to their ${score.budgetTier} budget. Highlight frame ergonomics, durability, and customized vision wellness.`,
+    objectionHandling: `They are a ${score.budgetTier}-tier client with ${score.urgency} urgency. Address cost by breaking prices down into monthly payments or emphasize durability.`,
+    upSellingTips: `Outline why supplementary anti-reflective coatings or a secondary backup pair fits their frequent lifestyle activities.`,
+    isFallback: true,
+  };
+}
+
+function parseStrategyJson(raw: string): AiStrategy {
+  const cleaned = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '');
+  const parsed = JSON.parse(cleaned);
+  if (!isAiStrategy(parsed)) {
+    throw new Error('AI provider returned an incomplete strategy.');
+  }
+  return parsed;
+}
+
+async function generateOpenRouterStrategy(profile: PatientStrategyProfile): Promise<AiStrategy | null> {
+  const apiKey = process.env.OPENROUTER_API_KEY || process.env.SIMPLE_LLM_API_KEY;
+  const apiUrl = process.env.OPENROUTER_API_URL || process.env.SIMPLE_LLM_API_URL || 'https://openrouter.ai/api/v1/chat/completions';
+  const model = process.env.OPENROUTER_MODEL || process.env.SIMPLE_LLM_MODEL || 'openrouter/free';
+
+  if (!apiKey && !process.env.SIMPLE_LLM_API_URL) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        ...(process.env.APP_URL ? { 'HTTP-Referer': process.env.APP_URL } : {}),
+        'X-Title': 'PatientIQ AI',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an elite clinical retail consulting coach. Always return valid JSON with the requested fields.',
+          },
+          {
+            role: 'user',
+            content: buildStrategyPrompt(profile),
+          },
+        ],
+        temperature: 0.4,
+        response_format: { type: 'json_object' },
+      }),
+    });
+
+    const data: any = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(data?.error?.message || data?.error || `OpenRouter request failed with ${response.status}`);
+    }
+
+    const text = data?.choices?.[0]?.message?.content;
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new Error('OpenRouter returned an empty response.');
+    }
+
+    return parseStrategyJson(text);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function generateGeminiStrategy(profile: PatientStrategyProfile): Promise<AiStrategy | null> {
+  const ai = getGeminiClient();
+  if (!ai) return null;
+
+  const response = await ai.models.generateContent({
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    contents: buildStrategyPrompt(profile),
+    config: {
+      systemInstruction: 'You are an elite clinical retail consulting coach. You analyze customer questionnaire preferences and write highly precise, helpful, conversational, and direct customer-service tactics for front-line optical practitioners. Always respond in valid JSON matching the exact schema provided.',
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        required: STRATEGY_FIELDS,
+        properties: {
+          styleAdvice: { type: Type.STRING },
+          lensUpgradeStrategy: { type: Type.STRING },
+          rapportOpener: { type: Type.STRING },
+          serviceApproach: { type: Type.STRING },
+          objectionHandling: { type: Type.STRING },
+          upSellingTips: { type: Type.STRING },
+        },
+      },
+    },
+  });
+
+  return parseStrategyJson(response.text || '{}');
+}
+
+async function generateAiStrategy(profile: PatientStrategyProfile): Promise<AiStrategy> {
+  try {
+    const openRouterStrategy = await generateOpenRouterStrategy(profile);
+    if (openRouterStrategy) return openRouterStrategy;
+  } catch (err) {
+    console.error('OpenRouter/free strategy error, trying next provider:', err);
+  }
+
+  try {
+    const geminiStrategy = await generateGeminiStrategy(profile);
+    if (geminiStrategy) return geminiStrategy;
+  } catch (err) {
+    console.error('Gemini strategy error, fallback initialized:', err);
+  }
+
+  return buildLocalStrategy(profile);
 }
 
 // REST Api endpoints for patient sessions and configurations
@@ -211,74 +410,19 @@ const DEMO_SESSIONS = [
   },
 ];
 
-const SESSIONS_FILE = path.join(process.cwd(), 'db-sessions.json');
-const CONFIGS_FILE = path.join(process.cwd(), 'db-configs.json');
-
-let storeConfigs: Record<string, StoreConfig> = {
+const storeConfigs: Record<string, StoreConfig> = {
   default: { ...DEFAULT_CONFIG }
 };
 
-let storeSessions: Record<string, any[]> = {
+const storeSessions: Record<string, any[]> = {
   default: [...DEMO_SESSIONS]
 };
-
-function savePersistedSessions() {
-  try {
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(storeSessions, null, 2), 'utf-8');
-    console.log('[Persistence] db-sessions.json saved');
-  } catch (err) {
-    console.error('[Persistence] Failed to write sessions:', err);
-  }
-}
-
-function savePersistedConfigs() {
-  try {
-    fs.writeFileSync(CONFIGS_FILE, JSON.stringify(storeConfigs, null, 2), 'utf-8');
-    console.log('[Persistence] db-configs.json saved');
-  } catch (err) {
-    console.error('[Persistence] Failed to write configs:', err);
-  }
-}
-
-function loadPersistedData() {
-  try {
-    if (fs.existsSync(SESSIONS_FILE)) {
-      const data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
-      if (data.trim()) {
-        storeSessions = JSON.parse(data);
-        console.log('[Persistence] Successfully loaded sessions from db-sessions.json');
-      }
-    } else {
-      savePersistedSessions();
-    }
-  } catch (err) {
-    console.error('[Persistence] Failed to load sessions, defaulting:', err);
-  }
-
-  try {
-    if (fs.existsSync(CONFIGS_FILE)) {
-      const data = fs.readFileSync(CONFIGS_FILE, 'utf-8');
-      if (data.trim()) {
-        storeConfigs = JSON.parse(data);
-        console.log('[Persistence] Successfully loaded configs from db-configs.json');
-      }
-    } else {
-      savePersistedConfigs();
-    }
-  } catch (err) {
-    console.error('[Persistence] Failed to load configs, defaulting:', err);
-  }
-}
-
-// Call on startup
-loadPersistedData();
 
 // GET config
 app.get('/api/config', (req, res) => {
   const storeId = (req.query.storeId as string) || 'default';
   if (!storeConfigs[storeId]) {
     storeConfigs[storeId] = { ...DEFAULT_CONFIG, storeId };
-    savePersistedConfigs();
   }
   res.json(storeConfigs[storeId]);
 });
@@ -288,7 +432,6 @@ app.post('/api/config', (req, res) => {
   const config = req.body;
   const storeId = config.storeId || 'default';
   storeConfigs[storeId] = config;
-  savePersistedConfigs();
   res.json({ success: true, config });
 });
 
@@ -301,104 +444,22 @@ app.get('/api/sessions', (req, res) => {
     } else {
       storeSessions[storeId] = [];
     }
-    savePersistedSessions();
   }
   res.json(storeSessions[storeId]);
 });
 
 // POST analyze (retained for backward compatibility if any)
 app.post('/api/analyze', async (req, res) => {
-  const { contact, isNewPatient, score, answers } = req.body;
+  const { answers } = req.body;
 
-  if (!answers || !score) {
+  if (!answers || !isValidStrategyProfile(req.body)) {
     return res.status(400).json({ error: 'Missing session answers or scored results.' });
   }
 
-  const ai = getGeminiClient();
-
-  if (!ai) {
-    // Elegant high-fidelity rule-based fallback strategy
-    const clientName = contact?.name || 'Guest';
-    const isNewText = isNewPatient ? 'As a new client to our clinic' : 'As a returning client';
-
-    const localStrategy = {
-      styleAdvice: `Suggest elegant ${score.frameStyle} designs matching their ${score.faceShape} face shape. Emphasize standard colors like ${score.colorPref.toLowerCase()} for daily use.`,
-      lensUpgradeStrategy: `Focus heavily on ${score.lensFlags.length > 0 ? score.lensFlags.join(' and ') : 'high-durability coatings'} based on their screen activities.`,
-      rapportOpener: `Welcome back, ${clientName}! ${isNewText}, we noticed you spend considerable time engaged in ${score.usageEnv.toLowerCase()}. Let's identify the perfect solution today.`,
-      serviceApproach: `Present selections that map directly to their ${score.budgetTier} budget. Highlight frame ergonomics, durability, and customized vision wellness.`,
-      objectionHandling: `They are a ${score.budgetTier}-tier client with ${score.urgency} urgency. Address cost by breaking prices down into monthly payments or emphasize durability.`,
-      upSellingTips: `Outline why supplementary anti-reflective coatings or a secondary backup pair fits their frequent lifestyle activities.`,
-      isFallback: true
-    };
-    return res.json({ strategy: localStrategy });
-  }
-
   try {
-    const prompt = `Analyze this patient profile from our retail optical kiosk system and generate a customized high-fidelity consulting strategy for our Customer Service representatives (CSR).
-    Here is the profile details:
-    - Name: ${contact?.name || 'Anonymous Guest'}
-    - Is New Patient: ${isNewPatient ? 'Yes' : 'No'}
-    - Urgency Level: ${score.urgency}
-    - Budget Tier: ${score.budgetTier}
-    - Frame Style Preference: ${score.frameStyle}
-    - Face Shape: ${score.faceShape}
-    - Preferred Colors: ${score.colorPref}
-    - Primary Lifestyle/Environment: ${score.usageEnv}
-    - Calculated Lens Focus Flags: ${score.lensFlags.join(', ')}
-
-    You must return a raw JSON object strictly adhering to the schema specified, mapping professional, highly specific, and actionable dialogue options that the practitioner can use. Make the advice highly tailored and practical, written in clear, professional English.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: prompt,
-      config: {
-        systemInstruction: 'You are an elite clinical retail consulting coach. You analyze customer questionnaire preferences and write highly precise, helpful, conversational, and direct customer-service tactics for front-line optical practitioners. Always respond in valid JSON matching the exact schema provided.',
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          required: [
-            'styleAdvice',
-            'lensUpgradeStrategy',
-            'rapportOpener',
-            'serviceApproach',
-            'objectionHandling',
-            'upSellingTips'
-          ],
-          properties: {
-            styleAdvice: {
-              type: Type.STRING,
-              description: 'Clear, specific, aesthetic advice recommending shapes, sizes, or weights of frames that balance their face shape and style direction.',
-            },
-            lensUpgradeStrategy: {
-              type: Type.STRING,
-              description: 'Which high-value specialty lenses or add-on technologies (e.g. customized progressives, blue-cut, active polarized) are most aligned with their user habits and screen fatigue.',
-            },
-            rapportOpener: {
-              type: Type.STRING,
-              description: 'A friendly, high impact direct opening greeting or conversation starter the salesperson can speak to start the meeting in a personalized way.',
-            },
-            serviceApproach: {
-              type: Type.STRING,
-              description: 'Stylistic and communicative guide for the representative: should they be fast and concise, story-led, tech-oriented, or value-driven?',
-            },
-            objectionHandling: {
-              type: Type.STRING,
-              description: 'An instruction on how to elegantly bypass pricing or time delay complaints depending on their budget tier and urgency flag.',
-            },
-            upSellingTips: {
-              type: Type.STRING,
-              description: 'Actionable upselling points for premium materials, special collections, or secondary backup lenses tailored to their habits.',
-            },
-          },
-        },
-      },
-    });
-
-    const resultText = response.text || '{}';
-    const parsed = JSON.parse(resultText);
-    return res.json({ strategy: parsed });
+    return res.json({ strategy: await generateAiStrategy(req.body) });
   } catch (error: any) {
-    console.error('Gemini Analysis API Error:', error);
+    console.error('AI Analysis API Error:', error);
     return res.status(500).json({ error: 'AI interpretation failed.', details: error.message });
   }
 });
@@ -412,6 +473,10 @@ app.post('/api/sessions', async (req, res) => {
     return res.status(400).json({ error: 'Missing session body.' });
   }
 
+  if (!isValidStrategyProfile(session)) {
+    return res.status(400).json({ error: 'Missing or invalid session score data.' });
+  }
+
   if (!storeSessions[activeStoreId]) {
     if (activeStoreId === 'default') {
       storeSessions[activeStoreId] = [...DEMO_SESSIONS];
@@ -420,84 +485,11 @@ app.post('/api/sessions', async (req, res) => {
     }
   }
 
-  const sessionToSave = { ...session };
-
-  const ai = getGeminiClient();
-  if (!ai) {
-    const clientName = sessionToSave.contact?.name || 'Guest';
-    const isNewText = sessionToSave.isNewPatient ? 'As a new client to our clinic' : 'As a returning client';
-    sessionToSave.aiStrategy = {
-      styleAdvice: `Suggest elegant ${sessionToSave.score.frameStyle} designs matching their ${sessionToSave.score.faceShape} face shape. Emphasize standard colors like ${sessionToSave.score.colorPref.toLowerCase()} for daily use.`,
-      lensUpgradeStrategy: `Focus heavily on ${sessionToSave.score.lensFlags.length > 0 ? sessionToSave.score.lensFlags.join(' and ') : 'high-durability coatings'} based on their screen activities.`,
-      rapportOpener: `Welcome back, ${clientName}! ${isNewText}, we noticed you spend considerable time engaged in ${sessionToSave.score.usageEnv.toLowerCase()}. Let's identify the perfect solution today.`,
-      serviceApproach: `Present selections that map directly to their ${sessionToSave.score.budgetTier} budget. Highlight frame ergonomics, durability, and customized vision wellness.`,
-      objectionHandling: `They are a ${sessionToSave.score.budgetTier}-tier client with ${sessionToSave.score.urgency} urgency. Address cost by breaking prices down into monthly payments or emphasize durability.`,
-      upSellingTips: `Outline why supplementary anti-reflective coatings or a secondary backup pair fits their frequent lifestyle activities.`,
-      isFallback: true
-    };
-  } else {
-    try {
-      const { contact, isNewPatient, score } = sessionToSave;
-      const prompt = `Analyze this patient profile from our retail optical kiosk system and generate a customized high-fidelity consulting strategy for our Customer Service representatives (CSR).
-      Here is the profile details:
-      - Name: ${contact?.name || 'Anonymous Guest'}
-      - Is New Patient: ${isNewPatient ? 'Yes' : 'No'}
-      - Urgency Level: ${score.urgency}
-      - Budget Tier: ${score.budgetTier}
-      - Frame Style Preference: ${score.frameStyle}
-      - Face Shape: ${score.faceShape}
-      - Preferred Colors: ${score.colorPref}
-      - Primary Lifestyle/Environment: ${score.usageEnv}
-      - Calculated Lens Focus Flags: ${score.lensFlags.join(', ')}
-
-      You must return a raw JSON object strictly adhering to the schema specified, mapping professional, highly specific, and actionable dialogue options that the practitioner can use. Make the advice highly tailored and practical, written in clear, professional English.`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
-        contents: prompt,
-        config: {
-          systemInstruction: 'You are an elite clinical retail consulting coach. You analyze customer questionnaire preferences and write highly precise, helpful, conversational, and direct customer-service tactics for front-line optical practitioners. Always respond in valid JSON matching the exact schema provided.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            required: [
-              'styleAdvice',
-              'lensUpgradeStrategy',
-              'rapportOpener',
-              'serviceApproach',
-              'objectionHandling',
-              'upSellingTips'
-            ],
-            properties: {
-              styleAdvice: { type: Type.STRING },
-              lensUpgradeStrategy: { type: Type.STRING },
-              rapportOpener: { type: Type.STRING },
-              serviceApproach: { type: Type.STRING },
-              objectionHandling: { type: Type.STRING },
-              upSellingTips: { type: Type.STRING },
-            }
-          }
-        }
-      });
-      const resultText = response.text || '{}';
-      sessionToSave.aiStrategy = JSON.parse(resultText);
-    } catch (err) {
-      console.error('Gemini direct session analysis error, fallback initialized:', err);
-      sessionToSave.aiStrategy = {
-        styleAdvice: `Suggest elegant ${sessionToSave.score.frameStyle} designs matching their ${sessionToSave.score.faceShape} face shape.`,
-        lensUpgradeStrategy: `Focus heavily on ${sessionToSave.score.lensFlags.join(' or ') || 'durability coatings'}.`,
-        rapportOpener: `Hello ${sessionToSave.contact?.name || 'there'}! Let's find your perfect style match today.`,
-        serviceApproach: `Present matching styles highlighting personalized aesthetics and comfort.`,
-        objectionHandling: 'Offer installments or discuss long-term durability rewards.',
-        upSellingTips: 'Outline custom lens add-ons for screen work.',
-        isFallback: true
-      };
-    }
-  }
+  const sessionToSave: PatientStrategyProfile & Record<string, any> = { ...session };
+  sessionToSave.aiStrategy = await generateAiStrategy(sessionToSave);
 
   // Prepend to our memory store
   storeSessions[activeStoreId] = [sessionToSave, ...storeSessions[activeStoreId]];
-  savePersistedSessions();
   res.json({ success: true, session: sessionToSave });
 });
 
@@ -515,7 +507,6 @@ app.put('/api/sessions/:id', (req, res) => {
     s.id === sessionId ? { ...s, ...session } : s
   );
 
-  savePersistedSessions();
   const updatedSession = storeSessions[activeStoreId].find(s => s.id === sessionId);
   res.json({ success: true, session: updatedSession });
 });
