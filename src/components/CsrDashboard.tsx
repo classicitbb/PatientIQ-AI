@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PatientSession, StoreConfig, CsrAssessment, OptionKey, AiStrategy } from '../types';
 import { scoreAnswers, getFrameAdvice, getLensAdvice, QUESTIONS } from '../utils/questions';
 import { 
@@ -47,7 +47,10 @@ export default function CsrDashboard({ config, sessions, onUpdateSession }: CsrD
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const selectedSession = sessions.find(s => s.id === selectedSessionId) || null;
+  const activeSessionId = sessions.some(s => s.id === selectedSessionId)
+    ? selectedSessionId
+    : sessions[0]?.id ?? null;
+  const selectedSession = sessions.find(s => s.id === activeSessionId) || null;
 
   // Sync edits on change of selected patient
   const syncPatientFields = (session: PatientSession) => {
@@ -79,11 +82,14 @@ export default function CsrDashboard({ config, sessions, onUpdateSession }: CsrD
     }
   };
 
-  useState(() => {
-    if (selectedSession) {
-      syncPatientFields(selectedSession);
+  useEffect(() => {
+    if (!activeSessionId) return;
+
+    const session = sessions.find(item => item.id === activeSessionId);
+    if (session) {
+      syncPatientFields(session);
     }
-  });
+  }, [activeSessionId]);
 
   const selectPatient = (session: PatientSession) => {
     setSelectedSessionId(session.id);
@@ -264,7 +270,7 @@ export default function CsrDashboard({ config, sessions, onUpdateSession }: CsrD
                       </div>
                     ) : (
                       sessions.map((sess) => {
-                        const isCur = sess.id === selectedSessionId;
+                        const isCur = sess.id === activeSessionId;
                         const isAssessed = !!sess.csrAssessment;
 
                         // High-fidelity badge computation
