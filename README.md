@@ -15,10 +15,6 @@ View your app in AI Studio: https://ai.studio/apps/deab171b-38d9-4dae-90db-e7740
 
 1. Install dependencies:
    `npm install`
-2. Set one AI key in `.env.local`:
-   - Free/simple route: `OPENROUTER_API_KEY` with `OPENROUTER_MODEL="openrouter/free"`
-   - Google route: `GEMINI_API_KEY`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
-
-If no AI key is configured, the app still completes intake forms using the local rule-based playbook fallback.
