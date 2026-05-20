@@ -8,6 +8,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
+import fs from 'fs';
 
 // Load environmental configurations
 dotenv.config();
@@ -210,19 +211,74 @@ const DEMO_SESSIONS = [
   },
 ];
 
-const storeConfigs: Record<string, StoreConfig> = {
+const SESSIONS_FILE = path.join(process.cwd(), 'db-sessions.json');
+const CONFIGS_FILE = path.join(process.cwd(), 'db-configs.json');
+
+let storeConfigs: Record<string, StoreConfig> = {
   default: { ...DEFAULT_CONFIG }
 };
 
-const storeSessions: Record<string, any[]> = {
+let storeSessions: Record<string, any[]> = {
   default: [...DEMO_SESSIONS]
 };
+
+function savePersistedSessions() {
+  try {
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(storeSessions, null, 2), 'utf-8');
+    console.log('[Persistence] db-sessions.json saved');
+  } catch (err) {
+    console.error('[Persistence] Failed to write sessions:', err);
+  }
+}
+
+function savePersistedConfigs() {
+  try {
+    fs.writeFileSync(CONFIGS_FILE, JSON.stringify(storeConfigs, null, 2), 'utf-8');
+    console.log('[Persistence] db-configs.json saved');
+  } catch (err) {
+    console.error('[Persistence] Failed to write configs:', err);
+  }
+}
+
+function loadPersistedData() {
+  try {
+    if (fs.existsSync(SESSIONS_FILE)) {
+      const data = fs.readFileSync(SESSIONS_FILE, 'utf-8');
+      if (data.trim()) {
+        storeSessions = JSON.parse(data);
+        console.log('[Persistence] Successfully loaded sessions from db-sessions.json');
+      }
+    } else {
+      savePersistedSessions();
+    }
+  } catch (err) {
+    console.error('[Persistence] Failed to load sessions, defaulting:', err);
+  }
+
+  try {
+    if (fs.existsSync(CONFIGS_FILE)) {
+      const data = fs.readFileSync(CONFIGS_FILE, 'utf-8');
+      if (data.trim()) {
+        storeConfigs = JSON.parse(data);
+        console.log('[Persistence] Successfully loaded configs from db-configs.json');
+      }
+    } else {
+      savePersistedConfigs();
+    }
+  } catch (err) {
+    console.error('[Persistence] Failed to load configs, defaulting:', err);
+  }
+}
+
+// Call on startup
+loadPersistedData();
 
 // GET config
 app.get('/api/config', (req, res) => {
   const storeId = (req.query.storeId as string) || 'default';
   if (!storeConfigs[storeId]) {
     storeConfigs[storeId] = { ...DEFAULT_CONFIG, storeId };
+    savePersistedConfigs();
   }
   res.json(storeConfigs[storeId]);
 });
@@ -232,6 +288,7 @@ app.post('/api/config', (req, res) => {
   const config = req.body;
   const storeId = config.storeId || 'default';
   storeConfigs[storeId] = config;
+  savePersistedConfigs();
   res.json({ success: true, config });
 });
 
@@ -244,6 +301,7 @@ app.get('/api/sessions', (req, res) => {
     } else {
       storeSessions[storeId] = [];
     }
+    savePersistedSessions();
   }
   res.json(storeSessions[storeId]);
 });
@@ -439,6 +497,7 @@ app.post('/api/sessions', async (req, res) => {
 
   // Prepend to our memory store
   storeSessions[activeStoreId] = [sessionToSave, ...storeSessions[activeStoreId]];
+  savePersistedSessions();
   res.json({ success: true, session: sessionToSave });
 });
 
@@ -456,6 +515,7 @@ app.put('/api/sessions/:id', (req, res) => {
     s.id === sessionId ? { ...s, ...session } : s
   );
 
+  savePersistedSessions();
   const updatedSession = storeSessions[activeStoreId].find(s => s.id === sessionId);
   res.json({ success: true, session: updatedSession });
 });

@@ -52,14 +52,31 @@ export default function App() {
         setConfig(getStoredConfig(storeSlug));
       }
 
-      // 2. Try to fetch sessions from server first with local storage fallbacks
+      // 2. Try to fetch sessions from server first with local storage fallbacks and auto-heal missing items
       try {
         const resSessions = await fetch(`/api/sessions?storeId=${storeSlug}`);
         if (resSessions.ok) {
           const serverSessions = await resSessions.json();
           if (Array.isArray(serverSessions)) {
-            setSessions(serverSessions);
-            saveStoredSessions(storeSlug, serverSessions);
+            const local = getStoredSessions(storeSlug);
+            const merged = [...serverSessions];
+            
+            // Check if client has local submissions not present on the server yet, and back-fill them
+            for (const loc of local) {
+              if (!merged.some(s => s.id === loc.id)) {
+                merged.push(loc);
+                
+                // Back-fill to server
+                fetch('/api/sessions', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ storeId: storeSlug, session: loc }),
+                }).catch(e => console.debug('[Sync] Failed to backfill local session:', e));
+              }
+            }
+            merged.sort((a, b) => b.timestamp - a.timestamp);
+            setSessions(merged);
+            saveStoredSessions(storeSlug, merged);
           } else {
             setSessions(getStoredSessions(storeSlug));
           }
@@ -83,8 +100,18 @@ export default function App() {
         if (resSessions.ok) {
           const serverSessions = await resSessions.json();
           if (Array.isArray(serverSessions)) {
-            setSessions(serverSessions);
-            saveStoredSessions(activeSlug, serverSessions);
+            // Merge gracefully - don't overwrite local-only sessions that are fresh/pending
+            setSessions(prev => {
+              const merged = [...serverSessions];
+              for (const p of prev) {
+                if (!merged.some(s => s.id === p.id)) {
+                  merged.push(p);
+                }
+              }
+              merged.sort((a, b) => b.timestamp - a.timestamp);
+              saveStoredSessions(activeSlug, merged);
+              return merged;
+            });
           }
         }
 
@@ -124,9 +151,14 @@ export default function App() {
 
   // Update sessions list locally & save
   const handleSessionComplete = (newSession: PatientSession) => {
-    const updated = [newSession, ...sessions];
-    setSessions(updated);
-    saveStoredSessions(storeId, updated);
+    setSessions(prev => {
+      if (prev.some(s => s.id === newSession.id)) {
+        return prev;
+      }
+      const updated = [newSession, ...prev];
+      saveStoredSessions(storeId, updated);
+      return updated;
+    });
   };
 
   const handleUpdateSession = async (updatedSession: PatientSession) => {
