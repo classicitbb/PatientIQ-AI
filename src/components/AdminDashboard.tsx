@@ -420,6 +420,9 @@ export default function AdminDashboard({ config, sessions, onUpdateConfig, onTri
                           <td className="py-3.5 px-4">
                             <span className="font-extrabold text-slate-900 block">{sess.contact.name || 'Anonymous Patient'}</span>
                             <span className="text-[10px] text-slate-500 block">{sess.contact.phone} &bull; {sess.contact.email || 'No email provided'}</span>
+                            <span className="text-[10px] text-indigo-650 font-bold block mt-1">
+                              🕰️ Submitted: {new Date(sess.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ({new Date(sess.timestamp).toLocaleDateString()})
+                            </span>
                           </td>
                           <td className="py-3.5 px-4">
                             <span className="font-mono font-bold text-slate-700">{sess.score.purchaseReadiness}%</span>

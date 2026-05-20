@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { QUESTIONS, scoreAnswers, generateId } from '../utils/questions';
+import { QUESTIONS, scoreAnswers, generateId, getFrameAdvice, getLensAdvice } from '../utils/questions';
 import { StoreConfig, PatientSession, OptionKey } from '../types';
 import { Sparkles, Maximize2, Check, ArrowRight, ArrowLeft } from 'lucide-react';
 
@@ -51,34 +51,40 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
       timestamp: Date.now(),
       isNewPatient,
       contact: {
-        name: name.trim(),
-        phone: phone.trim(),
-        email: email.trim(),
+        name: name.trim() || 'Anonymous Guest',
+        phone: phone.trim() || 'Unprovided',
+        email: email.trim() || '',
       },
       answers,
       score,
       csrAssessment: null,
     };
 
-    // Trigger AI strategy asynchronously in the background via express API (safely error protected)
+    let sessionToUse = newSession;
+
+    // Trigger AI strategy & persistent save directly onto server via POST API
     try {
-      const response = await fetch('/api/analyze', {
+      const params = new URLSearchParams(window.location.search);
+      const storeSlug = params.get('store') || 'default';
+
+      const response = await fetch('/api/sessions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSession),
+        body: JSON.stringify({ storeId: storeSlug, session: newSession }),
       });
       if (response.ok) {
         const data = await response.json();
-        if (data && data.strategy) {
-          newSession.aiStrategy = data.strategy;
+        if (data && data.success && data.session) {
+          // Use the complete server response (includes generated aiStrategy)
+          sessionToUse = data.session;
         }
       }
     } catch (e) {
-      console.warn('Unable to query Gemini on submit, fallback to rule-based analysis will be handles inside CSR panel.', e);
+      console.warn('Unable to save target session to backend, using local fallback:', e);
     }
 
-    onSessionComplete(newSession);
-    setCompletedSession(newSession);
+    onSessionComplete(sessionToUse);
+    setCompletedSession(sessionToUse);
     setStep(13);
     setSubmitting(false);
   };
@@ -287,7 +293,7 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
       <div className="w-full z-10">{renderProgressDots()}</div>
 
       {/* Central Content Box */}
-      <div className="w-full max-w-xl mx-auto my-auto py-6 relative z-10 flex flex-col justify-center">
+      <div className={`w-full mx-auto my-auto py-4 relative z-10 flex flex-col justify-center transition-all duration-300 ${step === 13 ? 'max-w-3xl' : 'max-w-xl'}`}>
         {/* Welcome Screen */}
         {step === -1 && (
           <div 
@@ -424,68 +430,154 @@ export default function PatientIntake({ config, onSessionComplete }: PatientInta
         {/* Interactive 12 Questions Screen */}
         {step >= 1 && step <= 12 && renderQuestion()}
 
-        {/* Thank You Card */}
+        {/* Thank You Card / Patient Diagnostic Findings Dashboard */}
         {step === 13 && completedSession && (
           <div 
             id="thank-you-card"
-            className="bg-white rounded-[28px] shadow-card px-6 py-8 md:p-8 border border-slate-50 text-center animate-[cardIn_0.4s_cubic-bezier(0.34,1.56,0.64,1)] relative overflow-hidden"
+            className="bg-white rounded-[28px] shadow-2xl p-5 sm:p-8 border border-slate-200/65 relative overflow-hidden animate-[cardIn_0.4s_cubic-bezier(0.34,1.56,0.64,1)] text-left w-full max-w-3xl mx-auto"
           >
-            {/* Header background accents */}
-            <div className="absolute top-0 inset-x-0 h-2" style={{ backgroundColor: config.primaryColor }} />
-            
-            <div className="flex justify-center mb-4">
-              <div className="w-20 h-20 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center text-4xl animate-bounce">
-                🎉
+            {/* Header branding strip */}
+            <div className="absolute top-0 inset-x-0 h-2.5" style={{ backgroundColor: config.primaryColor }} />
+
+            {/* Top Report header */}
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 border-b border-slate-100 pb-5 mt-2">
+              <div>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-black uppercase tracking-wider mb-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Stylist File Generated
+                </span>
+                <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-none">
+                  Your Custom Optics Blueprint
+                </h2>
+                <p className="text-xs sm:text-sm font-semibold text-slate-500 mt-1">
+                  Prepared for: <span className="text-slate-800 font-bold">{completedSession.contact.name}</span> &bull; File ID: #{completedSession.id.substring(0, 7).toUpperCase()}
+                </p>
               </div>
-            </div>
-
-            <h2 className="text-2xl md:text-3xl font-black text-slate-900 tracking-tight leading-none mb-2">
-              All Set, {name.split(' ')[0]}!
-            </h2>
-            <p className="text-sm md:text-base text-slate-600 max-w-sm mx-auto mb-6">
-              Your personal style and wellness preferences have been processed securely. Your design counselor will lead you shortly!
-            </p>
-
-            {/* Calculated Local preference tag indicators */}
-            <div className="bg-slate-50/80 rounded-2xl p-4 mb-6 border border-slate-100 max-w-md mx-auto">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Calculated Style Arch</h3>
-              <div className="flex flex-wrap gap-2 justify-center">
-                <span className="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-lg border border-indigo-100 z-10">
-                  🧬 {completedSession.score.frameStyle}
+              <div className="text-left sm:text-right flex flex-col sm:items-end justify-start">
+                <span className="text-[10px] font-mono font-bold text-slate-400">SUBMITTED</span>
+                <span className="text-xs font-black text-slate-800 font-mono">
+                  {new Date(completedSession.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
-                <span className="px-3 py-1.5 bg-amber-50 text-amber-700 text-xs font-bold rounded-lg border border-amber-100 z-10">
-                  🎨 {completedSession.score.colorPref.split(' — ')[0]}
-                </span>
-                {completedSession.score.lensFlags.slice(0, 2).map((flag) => (
-                  <span key={flag} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 text-xs font-bold rounded-lg border border-emerald-100 z-10">
-                    ⚡ {flag.toUpperCase()}
-                  </span>
-                ))}
-                {isNewPatient && (
-                  <span className="px-3 py-1.5 bg-pink-50 text-pink-700 text-xs font-bold rounded-lg border border-pink-100 z-10">
-                    🆕 NEW CLIENT FLAG
+                {completedSession.isNewPatient && (
+                  <span className="text-[9px] bg-pink-50 border border-pink-200 text-pink-700 font-black px-2 mt-1 rounded uppercase tracking-wider">
+                    First Visit
                   </span>
                 )}
               </div>
             </div>
 
-            {/* Handing Instructions panel */}
-            <div className="p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100 mb-8 max-w-sm mx-auto">
-              <p className="text-xs font-extrabold text-indigo-800">
-                👉 PLEASE HAND THIS TABLET TO THE FRONT OFFICE DESK
-              </p>
-              <p className="text-[10px] text-indigo-500 font-medium mt-1 uppercase tracking-wider">
-                Our team will fetch your file and initiate personalized testing.
-              </p>
+            {/* Findings Bento Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 py-6 border-b border-slate-100">
+              
+              {/* Box 1: Aesthetic & Frame Topology */}
+              <div className="p-5 rounded-2xl bg-indigo-50/45 border border-indigo-100/80 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs font-black text-indigo-950 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    🕶️ Aesthetic Profile Matching
+                  </h3>
+                  <div className="space-y-2.5 text-xs text-slate-705">
+                    <p className="flex justify-between items-center bg-white/65 py-1 px-2.5 rounded border border-indigo-100/30">
+                      <span className="text-slate-400 font-medium">Desired Style:</span> 
+                      <span className="text-indigo-900 font-extrabold">{completedSession.score.frameStyle}</span>
+                    </p>
+                    <p className="flex justify-between items-center bg-white/65 py-1 px-2.5 rounded border border-indigo-100/30">
+                      <span className="text-slate-400 font-medium">Face Shape:</span> 
+                      <span className="text-indigo-900 font-extrabold">{completedSession.score.faceShape} Topology</span>
+                    </p>
+                    <p className="flex justify-between items-center bg-white/65 py-1 px-2.5 rounded border border-indigo-100/30">
+                      <span className="text-slate-400 font-medium">Color Scheme:</span> 
+                      <span className="text-indigo-900 font-extrabold">{completedSession.score.colorPref.split(' — ')[0]}</span>
+                    </p>
+                  </div>
+                </div>
+                <div id="lifestyle-silhouettes" className="mt-4 p-3 bg-white border border-indigo-150/40 rounded-xl">
+                  <span className="text-[10px] font-black text-indigo-950 uppercase block mb-1">Stylist Recommendation:</span>
+                  <p className="text-[11px] text-slate-650 leading-relaxed font-sans italic">
+                    {getFrameAdvice(completedSession.score.frameStyle, completedSession.score.faceShape, completedSession.score.colorPref)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Box 2: Lifestyle Environment */}
+              <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200/60 flex flex-col justify-between">
+                <div>
+                  <h3 className="text-xs font-black text-slate-700 uppercase tracking-widest mb-3 flex items-center gap-1.5">
+                    💻 Screen &amp; Environment Analysis
+                  </h3>
+                  <div className="space-y-3">
+                    <div>
+                      <span className="text-[9px] uppercase font-bold text-slate-400 block mb-0.5">Primary Environment:</span>
+                      <span className="text-xs font-extrabold text-slate-800 tracking-tight leading-tight block">
+                        {completedSession.score.usageEnv}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-[9px] uppercase font-bold text-slate-400 block mb-1">Vision Wellness Shields:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {completedSession.score.lensFlags.map((flag) => (
+                          <span key={flag} className="text-[9px] font-black bg-white text-slate-800 border border-slate-200/80 px-2 py-0.5 rounded uppercase leading-none select-none">
+                            ⚡ {flag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="mt-4 p-3 bg-slate-900 text-white rounded-xl text-center flex items-center justify-between px-4">
+                  <span className="text-[9px] font-black text-indigo-400 uppercase tracking-wider">PRE-VISIT READINESS</span>
+                  <span className="text-lg font-black tracking-tight">{completedSession.score.purchaseReadiness}% READY</span>
+                </div>
+              </div>
             </div>
 
-            <button
-              id="reset-intake-btn"
-              onClick={resetForm}
-              className="px-6 py-3 border border-slate-200 hover:border-slate-300 text-slate-500 hover:text-slate-800 text-xs font-extrabold rounded-xl transition duration-150 active:scale-95 flex items-center gap-1.5 mx-auto"
-            >
-              🔄 Start next pre-visit profile form
-            </button>
+            {/* Custom Lens Blueprint Sections */}
+            <div className="py-6">
+              <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">
+                🔬 Recommended Lens Upgrade Blueprint
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="p-3.5 bg-slate-50 border border-slate-200/60 rounded-xl text-xs flex items-start gap-2.5 hover:bg-slate-100/40 transition">
+                  <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">1</span>
+                  <div>
+                    <strong className="text-slate-800 block font-bold">Workspace Eye-Protection Layers</strong>
+                    <span className="text-slate-500 text-[11px] leading-relaxed block mt-0.5">
+                      Specially optimized coating to block high-frequency blue rays emitted by monitors, addressing digital fatigue.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-3.5 bg-slate-50 border border-slate-200/60 rounded-xl text-xs flex items-start gap-2.5 hover:bg-slate-100/40 transition">
+                  <span className="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-[10px] shrink-0 mt-0.5">2</span>
+                  <div>
+                    <strong className="text-slate-800 block font-bold">Dynamic UV Light Adapt</strong>
+                    <span className="text-slate-500 text-[11px] leading-relaxed block mt-0.5">
+                      Ensures natural visual clarity outdoors as lenses adapt instantly to strong solar glares and glare points.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Handing Instructions panel */}
+            <div className="p-4 bg-indigo-950 border border-indigo-900 text-white rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <p className="text-xs font-black uppercase tracking-wider text-amber-400">
+                  👉 OPTICIAN INSTRUCTION FOR CLIENT DISPENSING
+                </p>
+                <p className="text-[11px] text-slate-300 leading-snug">
+                  Please hand this tablet to the styling coordinator. Your design file is active inside our live Stylist Portal!
+                </p>
+              </div>
+              <button
+                id="reset-intake-btn"
+                onClick={resetForm}
+                className="px-4 py-2 bg-white hover:bg-slate-50 hover:shadow text-slate-900 text-xs font-extrabold rounded-lg shrink-0 transition duration-150 active:scale-95 cursor-pointer"
+              >
+                Reset / Start Next Profile
+              </button>
+            </div>
           </div>
         )}
       </div>

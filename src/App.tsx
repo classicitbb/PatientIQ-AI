@@ -27,17 +27,81 @@ export default function App() {
   const [pinTitle, setPinTitle] = useState<string>('');
   const [pinHint, setPinHint] = useState<string>('');
 
-  // Extract query URL parameters on mount
+  // Extract query URL parameters on mount and run real-time background sync polling
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const storeSlug = params.get('store') || 'default';
     setStoreId(storeSlug);
 
-    const storeConfig = getStoredConfig(storeSlug);
-    setConfig(storeConfig);
+    const loadData = async () => {
+      // 1. Try to fetch configuration from server first with local storage fallbacks
+      try {
+        const resConfig = await fetch(`/api/config?storeId=${storeSlug}`);
+        if (resConfig.ok) {
+          const serverConfig = await resConfig.json();
+          if (serverConfig && serverConfig.storeId) {
+            setConfig(serverConfig);
+            saveStoredConfig(storeSlug, serverConfig);
+          } else {
+            setConfig(getStoredConfig(storeSlug));
+          }
+        } else {
+          setConfig(getStoredConfig(storeSlug));
+        }
+      } catch (e) {
+        setConfig(getStoredConfig(storeSlug));
+      }
 
-    const storeSessions = getStoredSessions(storeSlug);
-    setSessions(storeSessions);
+      // 2. Try to fetch sessions from server first with local storage fallbacks
+      try {
+        const resSessions = await fetch(`/api/sessions?storeId=${storeSlug}`);
+        if (resSessions.ok) {
+          const serverSessions = await resSessions.json();
+          if (Array.isArray(serverSessions)) {
+            setSessions(serverSessions);
+            saveStoredSessions(storeSlug, serverSessions);
+          } else {
+            setSessions(getStoredSessions(storeSlug));
+          }
+        } else {
+          setSessions(getStoredSessions(storeSlug));
+        }
+      } catch (e) {
+        setSessions(getStoredSessions(storeSlug));
+      }
+    };
+
+    loadData();
+
+    // Live update polling: fetches any updates submitted by other kiosk screens or portal pages instantly
+    const interval = setInterval(async () => {
+      try {
+        const currentUrlParams = new URLSearchParams(window.location.search);
+        const activeSlug = currentUrlParams.get('store') || 'default';
+
+        const resSessions = await fetch(`/api/sessions?storeId=${activeSlug}`);
+        if (resSessions.ok) {
+          const serverSessions = await resSessions.json();
+          if (Array.isArray(serverSessions)) {
+            setSessions(serverSessions);
+            saveStoredSessions(activeSlug, serverSessions);
+          }
+        }
+
+        const resConfig = await fetch(`/api/config?storeId=${activeSlug}`);
+        if (resConfig.ok) {
+          const serverConfig = await resConfig.json();
+          if (serverConfig && serverConfig.storeId) {
+             setConfig(serverConfig);
+             saveStoredConfig(activeSlug, serverConfig);
+          }
+        }
+      } catch (err) {
+        console.debug('Background sync interval offline:', err);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
   }, []);
 
   // Set CSS variables inside document :root to accommodate real-time store branding changes
@@ -51,27 +115,38 @@ export default function App() {
 
   if (!config) {
     return (
-      <div className="min-h-screen bg-slate-900 flex flex-col justify-center items-center text-white p-6">
+      <div className="min-h-screen bg-slate-905 flex flex-col justify-center items-center text-white p-6">
         <div className="w-12 h-12 rounded-full border-4 border-t-indigo-500 border-slate-800 animate-spin mb-4" />
         <p className="text-sm font-bold text-slate-400">Loading Patient IQ Intelligent Core Configuration...</p>
       </div>
     );
   }
 
-  // Update sessions helper
+  // Update sessions list locally & save
   const handleSessionComplete = (newSession: PatientSession) => {
     const updated = [newSession, ...sessions];
     setSessions(updated);
     saveStoredSessions(storeId, updated);
   };
 
-  const handleUpdateSession = (updatedSession: PatientSession) => {
+  const handleUpdateSession = async (updatedSession: PatientSession) => {
     const updated = sessions.map(s => s.id === updatedSession.id ? updatedSession : s);
     setSessions(updated);
     saveStoredSessions(storeId, updated);
+
+    // Sync assessment to server
+    try {
+      await fetch(`/api/sessions/${updatedSession.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, session: updatedSession }),
+      });
+    } catch (e) {
+      console.warn('Sync updated assessment to server failed:', e);
+    }
   };
 
-  const handleUpdateConfig = (newConfig: StoreConfig) => {
+  const handleUpdateConfig = async (newConfig: StoreConfig) => {
     // Check if store ID changed, if so synchronize URL query parameter in background history securely
     if (newConfig.storeId !== storeId) {
       setStoreId(newConfig.storeId);
@@ -82,6 +157,17 @@ export default function App() {
 
     setConfig(newConfig);
     saveStoredConfig(newConfig.storeId, newConfig);
+
+    // Sync updated store config to server
+    try {
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newConfig),
+      });
+    } catch (e) {
+      console.warn('Sync configuration to server failed:', e);
+    }
 
     // Seed/migrate sessions for new namespace
     const newSessions = getStoredSessions(newConfig.storeId);
