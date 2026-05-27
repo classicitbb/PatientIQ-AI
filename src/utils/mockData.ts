@@ -8,7 +8,7 @@ import { scoreAnswers } from './questions';
 
 export const DEFAULT_CONFIG: StoreConfig = {
   storeId: 'default',
-  storeName: 'PriceSmart Optical',
+  storeName: 'PatientSmart IQ',
   storeAddress: '100 Meridian Way, Suite 240, Metro City',
   welcomeMessage: 'While you wait, let us get to know your style a little — so we can make the most of your visit today.',
   primaryColor: '#003087',
